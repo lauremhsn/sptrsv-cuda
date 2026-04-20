@@ -2,9 +2,13 @@
 #include <cuda/atomic>
 
 __global__ void kernel1(unsigned int n, unsigned int k,
-                        unsigned int* cscColPtrs, unsigned int* cscRowIdxs, float* cscVals,
-                        unsigned int* csrRowPtrs, unsigned int* csrColIdxs, float* csrVals,
-                        float* B, float* X,
+                        const unsigned int* __restrict__ cscColPtrs,
+                        const unsigned int* __restrict__ cscRowIdxs,
+                        const float* __restrict__ cscVals,
+                        const unsigned int* __restrict__ csrRowPtrs,
+                        const unsigned int* __restrict__ csrColIdxs,
+                        const float* __restrict__ csrVals,
+                        const float* __restrict__ B, float* X,
                         float* partialSum, int* inDegree, int* nextRow) {
 
     unsigned int b = threadIdx.x;
@@ -26,6 +30,7 @@ __global__ void kernel1(unsigned int n, unsigned int k,
         }
         __syncthreads();
 
+        float xi = 0.0f;
         if (b < k) {
             float diag = 1.0f;
             for (unsigned int p = csrRowPtrs[i]; p < csrRowPtrs[i + 1]; ++p) {
@@ -34,29 +39,31 @@ __global__ void kernel1(unsigned int n, unsigned int k,
                     break;
                 }
             }
-
-            X[i * k + b] = (B[i * k + b] - partialSum[i * k + b]) / diag;
+            xi = (B[i * k + b] - partialSum[i * k + b]) / diag;
+            X[i * k + b] = xi;
         }
         __syncthreads();
 
+        unsigned int cStart = cscColPtrs[i];
+        unsigned int cEnd   = cscColPtrs[i + 1];
+
         if (b < k) {
-            for (unsigned int p = cscColPtrs[i]; p < cscColPtrs[i + 1]; ++p) {
+            for (unsigned int p = cStart; p < cEnd; ++p) {
                 unsigned int r = cscRowIdxs[p];
                 if (r > (unsigned int)i) {
-                    atomicAdd(&partialSum[r * k + b], cscVals[p] * X[i * k + b]);
+                    atomicAdd(&partialSum[r * k + b], cscVals[p] * xi);
                 }
             }
         }
+
+        __threadfence();
         __syncthreads();
 
-        if (b == 0) {
-            __threadfence();
-            for (unsigned int p = cscColPtrs[i]; p < cscColPtrs[i + 1]; ++p) {
-                unsigned int r = cscRowIdxs[p];
-                if (r > (unsigned int)i) {
-                    cuda::atomic_ref<int, cuda::thread_scope_device> deg(inDegree[r]);
-                    deg.fetch_sub(1, cuda::memory_order_release);
-                }
+        for (unsigned int p = cStart + b; p < cEnd; p += blockDim.x) {
+            unsigned int r = cscRowIdxs[p];
+            if (r > (unsigned int)i) {
+                cuda::atomic_ref<int, cuda::thread_scope_device> deg(inDegree[r]);
+                deg.fetch_sub(1, cuda::memory_order_release);
             }
         }
         __syncthreads();
@@ -86,12 +93,12 @@ void sptrsv_gpu1(CSCMatrix* L_c, CSRMatrix* L_r, DenseMatrix* B, DenseMatrix* X,
         }
     }
 
-    int* inDegree_d;
+    int*   inDegree_d;
     float* partialSum_d;
-    int* nextRow_d;
-    cudaMalloc((void**)&inDegree_d, n * sizeof(int));
+    int*   nextRow_d;
+    cudaMalloc((void**)&inDegree_d,   n * sizeof(int));
     cudaMalloc((void**)&partialSum_d, (size_t)n * k * sizeof(float));
-    cudaMalloc((void**)&nextRow_d, sizeof(int));
+    cudaMalloc((void**)&nextRow_d,    sizeof(int));
 
     cudaMemcpy(inDegree_d, inDegree_h, n * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemset(partialSum_d, 0, (size_t)n * k * sizeof(float));
@@ -99,7 +106,7 @@ void sptrsv_gpu1(CSCMatrix* L_c, CSRMatrix* L_r, DenseMatrix* B, DenseMatrix* X,
 
     free(inDegree_h);
 
-    int numSMs;
+    int numSMs = 0;
     cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
     dim3 block(k);
     dim3 grid(numSMs);
