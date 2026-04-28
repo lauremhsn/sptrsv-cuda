@@ -122,8 +122,9 @@ void sptrsv_gpu2(CSCMatrix* L_c, CSRMatrix* L_r, DenseMatrix* B, DenseMatrix* X,
     dim3 block(k);
     dim3 grid(numSMs * blocksPerSM);
 
-    kernel2<<<grid, block>>>(n, k, threads, csrPtr.rowPtrs, csrPtr.colIdxs, csrPtr.values, cscPtr.colPtrs, cscPtr.rowIdxs, cscDownStart_d, diag_d, bPtr.values, xPtr.values, inDegree_d, nextRow_d);
-
+  kernel2<<<grid, block>>>(n, k, csrPtr.rowPtrs, csrPtr.colIdxs, csrPtr.values,
+                           cscPtr.colPtrs, cscPtr.rowIdxs, cscDownStart_d,
+                           diag_d, bPtr.values, xPtr.values, inDegree_d, nextRow_d);
     cudaFree(inDegree_d);
     cudaFree(nextRow_d);
     cudaFree(diag_d);
